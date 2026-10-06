@@ -1,0 +1,41 @@
+name: Prepare draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag matching package.json version (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 26
+      - name: Validate release version
+        run: node --input-type=module -e 'import fs from "node:fs"; const { version } = JSON.parse(fs.readFileSync("package.json", "utf8")); if (process.env.RELEASE_TAG !== `v${version}`) throw new Error("Tag must match package.json version");'
+      - name: Download verified package
+        run: gh run download "$GITHUB_RUN_ID" --name opencode-codex-guardian --dir artifacts
+      - name: Create draft only
+        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes --draft

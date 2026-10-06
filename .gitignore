@@ -1,0 +1,8 @@
+node_modules/
+dist/
+artifacts/
+*.tgz
+verification.local.json
+verification.*.local.json
+.env
+.env.*
