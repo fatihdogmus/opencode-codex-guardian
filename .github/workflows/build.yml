@@ -24,6 +24,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run check
+      - run: npm run benchmark -- --compare benchmarks/baseline.boundary.json
       - run: mkdir -p artifacts
       - run: npm pack --ignore-scripts --pack-destination artifacts
       - run: npm run smoke -- artifacts/*.tgz

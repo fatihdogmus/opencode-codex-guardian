@@ -4,6 +4,7 @@ import type { Context } from "@opencode/plugin/promise/plugin"
 import { CodexAutoReviewTransport } from "../../src/transports/codex-auto-review.ts"
 import { Diagnostics } from "../../src/diagnostics.ts"
 import { input, allow } from "../helpers.ts"
+import { AUTHORIZATION_GUIDANCE } from "../../src/review-policy.ts"
 
 async function fixture(oauth = true, websocket = false, messages: unknown[] = []) {
     const hooks = new Map<string, (event: any) => Promise<void>>()
@@ -21,6 +22,10 @@ async function fixture(oauth = true, websocket = false, messages: unknown[] = []
             remove: async ({ sessionID }: any) => { removed.push(sessionID) },
             generate: async ({ sessionID, prompt }: any) => {
                 assert.ok(prompt.includes("strict JSON"))
+                const generation = { sessionID, tools: { shell: {} }, system: [{ type: "text", text: "Unrelated inherited policy" }], options: {} }
+                await hooks.get("generate")!(generation)
+                assert.deepEqual(generation.tools, {})
+                assert.deepEqual(generation.system, [{ type: "text", text: AUTHORIZATION_GUIDANCE }])
                 const event = { sessionID, kind: "generate", model: { providerID: "openai", id: "gpt-6-luna" } }
                 if (websocket) {
                     const handshake = { ...event, url: "wss://chatgpt.com/backend-api/codex/responses", headers: {} as Record<string, string> }
@@ -43,30 +48,27 @@ async function fixture(oauth = true, websocket = false, messages: unknown[] = []
     const transport = new CodexAutoReviewTransport(ctx, diagnostics)
     await transport.installHooks()
     transport.parents.observe(input.sessionID, { type: "response.created", response: { id: "resp_parent" } })
-    return { transport, diagnostics, hooks, created, removed, requests }
+    return { transport, diagnostics, hooks, created, removed, requests, ctx }
 }
 
 for (const websocket of [false, true]) {
-    test(`native ${websocket ? "WebSocket" : "HTTP"} uses existing authenticated provider, linked model rewrite and reusable isolated session`, async () => {
+    test(`native ${websocket ? "WebSocket" : "HTTP"} uses fresh isolated sessions and deletes them after each review`, async () => {
         const f = await fixture(true, websocket)
         assert.deepEqual(await f.transport.review(input, new AbortController().signal), allow)
         assert.deepEqual(await f.transport.review(input, new AbortController().signal), allow)
-        assert.equal(f.created.length, 1)
+        assert.equal(f.created.length, 2)
         assert.deepEqual(f.created[0].location, { directory: input.cwd })
         assert.deepEqual(f.created[0].permissions, [{ action: "*", resource: "*", effect: "deny" }])
         assert.equal(f.requests.length, 2)
         assert.ok(f.requests.every((request) => request.model === "codex-auto-review" && request.client_metadata.parent_response_id === "resp_parent"))
         assert.equal(f.diagnostics.nativeState, "NATIVE_WORKS_ACCOUNTING_UNKNOWN")
         assert.equal(f.transport.isInternal("ses_reviewer1"), true)
-        const generate = { sessionID: "ses_reviewer1", system: [{ text: "main" }], tools: { shell: {} }, options: {} }
-        await f.hooks.get("generate")!(generate)
-        assert.deepEqual(generate.tools, {})
-        assert.deepEqual(generate.system, [])
+        assert.deepEqual(f.removed, ["ses_reviewer1", "ses_reviewer2"])
         const retry = { sessionID: "ses_reviewer1", decision: { retry: true } }
         await f.hooks.get("retry")!(retry)
         assert.deepEqual(retry.decision, { retry: false })
         await f.transport.close()
-        assert.deepEqual(f.removed, ["ses_reviewer1"])
+        assert.deepEqual(f.removed, ["ses_reviewer1", "ses_reviewer2"])
     })
 }
 
@@ -126,4 +128,91 @@ test("only primary ChatGPT OAuth requests receive credit metadata; response obse
     assert.equal(f.transport.parents.get({ sessionID: "ses_main", source: { type: "tool", messageID: "msg", id: "call_actual" } }), "resp_actual")
     await f.hooks.get("prompt")!({ sessionID: "ses_main" })
     assert.equal(f.transport.parents.get({ sessionID: "ses_main" }), undefined)
+})
+
+test("reviewer cleanup occurs after provider errors and abort before late completion", async () => {
+    const failing = await fixture()
+    failing.ctx.session.generate = async () => { throw new Error("provider failure") }
+    await assert.rejects(() => failing.transport.review({ ...input }, new AbortController().signal))
+    assert.deepEqual(failing.removed, ["ses_reviewer1"])
+    const f = await fixture()
+    let finish!: (value: { text: string }) => void
+    let started!: () => void
+    const ready = new Promise<void>((resolve) => { started = resolve })
+    f.ctx.session.generate = async () => { started(); return new Promise((resolve) => { finish = resolve }) as any }
+    const controller = new AbortController()
+    const pending = f.transport.review({ ...input }, controller.signal)
+    await ready
+    controller.abort()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(f.removed, ["ses_reviewer1"])
+    finish({ text: JSON.stringify(allow) })
+    await assert.rejects(() => pending)
+    assert.deepEqual(f.removed, ["ses_reviewer1"])
+})
+test("aborted slow session creation is cleaned before any generation", async () => {
+    const f = await fixture()
+    let create!: (session: any) => void
+    let started!: () => void
+    const ready = new Promise<void>((resolve) => { started = resolve })
+    f.ctx.session.create = async () => { started(); return new Promise((resolve) => { create = resolve }) as any }
+    const controller = new AbortController()
+    const pending = f.transport.review({ ...input }, controller.signal)
+    await ready
+    controller.abort()
+    create({ id: "ses_slow" })
+    await assert.rejects(() => pending)
+    assert.deepEqual(f.removed, ["ses_slow"])
+    assert.equal(f.requests.length, 0)
+})
+test("fresh session prompts do not contain previous review input", async () => {
+    const f = await fixture()
+    const generate = f.ctx.session.generate
+    const prompts: string[] = []
+    f.ctx.session.generate = async (...args: any[]) => { prompts.push(args[0].prompt); return (generate as any)(...args) }
+    await f.transport.review({ ...input, userIntent: "FIRST_REVIEW_MARKER" }, new AbortController().signal)
+    await f.transport.review({ ...input, userIntent: "SECOND_REVIEW_MARKER" }, new AbortController().signal)
+    assert.ok(!prompts[1].includes("FIRST_REVIEW_MARKER"))
+    assert.equal(f.created.length, 2)
+})
+
+test("reviewer cleanup failure invalidates an otherwise valid allow", async () => {
+    const f = await fixture()
+    f.ctx.session.remove = async () => { throw new Error("remove failed") }
+    await assert.rejects(() => f.transport.review({ ...input }, new AbortController().signal), /native_cleanup_failed/)
+    assert.equal(f.diagnostics.cleanupFailures, 1)
+    await assert.rejects(() => f.hooks.get("http.request")!({ sessionID: "ses_reviewer1", kind: "generate", request: new Request("https://chatgpt.com/backend-api/codex/responses") }), /native_session_inactive/)
+})
+test("cancelled in-flight auth hook cannot dispatch after reviewer retirement", async () => {
+    const f = await fixture()
+    const active = f.ctx.integration.connection.active
+    let resolveAuth!: (value: any) => void
+    let authStarted!: () => void
+    const ready = new Promise<void>((resolve) => { authStarted = resolve })
+    const controller = new AbortController()
+    let lateHook!: Promise<void>
+    f.ctx.session.generate = async ({ sessionID }: any) => {
+        Object.assign(f.ctx.integration.connection, { active: async () => { authStarted(); return new Promise((resolve) => { resolveAuth = resolve }) } })
+        lateHook = f.hooks.get("http.request")!({ sessionID, kind: "generate", request: new Request("https://chatgpt.com/backend-api/codex/responses", { method: "POST", body: "{}" }) })
+        await lateHook
+        return { text: JSON.stringify(allow) } as any
+    }
+    const pending = f.transport.review({ ...input }, controller.signal)
+    await ready
+    controller.abort()
+    resolveAuth({ type: "credential", method: "oauth" })
+    await assert.rejects(() => lateHook, /native_session_inactive/)
+    await assert.rejects(() => pending)
+    assert.deepEqual(f.removed, ["ses_reviewer1"])
+    Object.assign(f.ctx.integration.connection, { active })
+})
+test("missing or partially installed native hooks never send ordinary-model inference", async () => {
+    const f = await fixture()
+    const transport = new CodexAutoReviewTransport(f.ctx, new Diagnostics())
+    await assert.rejects(() => transport.review({ ...input }, new AbortController().signal), /native_hooks_unavailable/)
+    Object.assign(f.ctx.session, { hook: async (name: string) => { if (name === "experimental.ws.send") throw new Error("Unsupported hook") } })
+    await assert.rejects(() => transport.installHooks())
+    await assert.rejects(() => transport.review({ ...input }, new AbortController().signal), /native_hooks_unavailable/)
+    assert.equal(f.requests.length, 0)
+    assert.equal(f.created.length, 0)
 })

@@ -17,3 +17,10 @@ test("local policy cannot allow critical or weakly authorized high risk", () => 
     assert.equal(effectiveDecision({ ...allow, risk_level: "medium", user_authorization: "low" }), "ask")
     assert.equal(effectiveDecision({ ...allow, risk_level: "high" }), "allow")
 })
+test("enum coercion cannot turn an array-valued deny or risk label into an allow", () => {
+    for (const assessment of [
+        { risk_level: "low", user_authorization: "high", outcome: ["deny"], rationale: "deny" },
+        { risk_level: ["critical"], user_authorization: "high", outcome: "allow", rationale: "deny" },
+        { risk_level: "high", user_authorization: ["high"], outcome: "allow", rationale: "deny" },
+    ]) assert.throws(() => parseAssessment(assessment))
+})

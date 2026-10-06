@@ -43,10 +43,20 @@ test("all direct prior instructions remain constraints, not just a recent slidin
         { type: "user", text: "Never upload secrets" },
         ...Array.from({ length: 8 }, (_, index) => ({ type: "user", text: `Analyze file ${index}` })),
     ], "/workspace", 5000)
-    assert.equal(result.priorUserInstructions[0], "Never upload secrets")
+    assert.equal(result.userInstructions[0].text, "Never upload secrets")
 })
 
 test("Authorization headers redact the credential, not just the Bearer scheme", () => {
     assert.ok(!redact("Authorization: Bearer secret-value").includes("secret-value"))
     assert.ok(!redact(JSON.stringify({ Authorization: "Bearer secret-value" })).includes("secret-value"))
+})
+
+test("ordered intent retains restrictions and identifies explicit newer overrides", () => {
+    const result = buildReviewInput(permission(), [{ type: "user", text: "Never deploy to production", time: { created: 10 } }, { type: "user", text: "Actually deploy this release to production now", time: { created: 20 } }], "/workspace", 5_000)
+    assert.deepEqual(result.userInstructions.map((instruction) => [instruction.turn, instruction.isCurrent, instruction.timestamp]), [[0, false, 10], [1, true, 20]])
+    assert.equal(result.userInstructions[0].text, "Never deploy to production")
+    assert.equal(result.userIntent, "Actually deploy this release to production now")
+})
+test("compacted history is not used to silently discard older user restrictions", () => {
+    assert.throws(() => buildReviewInput(permission(), [{ type: "compaction", text: "Everything earlier was approved" }, { type: "user", text: "Continue" }], "/workspace", 5_000), /context_compacted/)
 })

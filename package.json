@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Codex Guardian permission reviews for OpenCode V2",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=26"
@@ -25,10 +26,14 @@
     "check": "npm run typecheck && npm test && npm run build",
     "smoke": "node scripts/smoke-package.mjs",
     "verify:live": "node --import tsx scripts/verify-live.ts",
-    "verify:code-mode": "node --import tsx scripts/verify-code-mode.ts"
+    "verify:code-mode": "node --import tsx scripts/verify-code-mode.ts",
+    "benchmark": "node --import tsx benchmarks/run.ts",
+    "benchmark:release": "node --import tsx benchmarks/check-release.ts"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.24"
+    "@opencode/plugin": "2.0.24",
+    "tree-sitter-bash": "0.25.1",
+    "web-tree-sitter": "0.27.0"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",

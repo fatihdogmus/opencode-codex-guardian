@@ -4,10 +4,12 @@ import { CircuitBreaker } from "../src/circuit-breaker.ts"
 import { parseConfig } from "../src/config.ts"
 import { actionFingerprint } from "../src/utils/hashing.ts"
 import { input } from "./helpers.ts"
+import { normalizeAction } from "../src/action-normalizer.ts"
 
-test("equivalent destructive commands share a fingerprint", () => {
-    const commands = ["rm ~/private.txt", "python -c 'os.remove(\"~/private.txt\")'", "find ~ -path ~/private.txt -delete", "find ~ -name private.txt -delete"]
-    assert.equal(new Set(commands.map((command) => actionFingerprint({ ...input, resources: [command] }))).size, 1)
+test("equivalent destructive commands share a fingerprint", async () => {
+    const commands = ["rm /foo", "python -c 'os.remove(\"/foo\")'", "find / -path /foo -delete", "find /foo -maxdepth 0 -delete"]
+    const fingerprints = await Promise.all(commands.map(async (command) => actionFingerprint({ ...input, resources: [command], normalized: await normalizeAction("shell", [command], input.cwd) })))
+    assert.equal(new Set(fingerprints).size, 1)
 })
 test("denials are session-scoped, expire and trip at the configured threshold", () => {
     let now = 0

@@ -21,4 +21,6 @@ export class CircuitBreaker {
         if (this.records.size > 10_000) this.records.delete(this.records.keys().next().value!)
     }
     clear(): void { this.records.clear() }
+    clearSession(sessionID: string): void { for (const key of this.records.keys()) if (key.startsWith(`${sessionID}:`)) this.records.delete(key) }
+    get size(): number { this.prune(); return this.records.size }
 }

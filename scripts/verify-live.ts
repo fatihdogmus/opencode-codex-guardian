@@ -47,7 +47,7 @@ try {
     report.cases = []
     report.genericCases = []
     for (const scenario of [cases[0], cases[5]]) {
-        const result = rpc("auto-review-verification", "generic", { sessionID: "ses_generic_test", userIntent: scenario.intent, priorUserInstructions: [], action: "shell", resources: [scenario.command], recentContext: [], explicitAuthorizations: [], cwd: directory })
+        const result = rpc("auto-review-verification", "generic", { sessionID: "ses_generic_test", userIntent: scenario.intent, userInstructions: [{ text: scenario.intent, turn: 0, isCurrent: true }], action: "shell", resources: [scenario.command], recentContext: [], explicitAuthorizations: [], cwd: directory })
         report.genericCases.push({ expected: scenario.expected, actual: result.decision })
     }
     for (const scenario of cases) {

@@ -10,6 +10,7 @@ test("generic reviewer uses isolated model-only generate API with a structured p
         assert.deepEqual(request.model, { providerID: "openai", id: "model" })
         assert.ok(request.prompt.includes("UNTRUSTED DATA"))
         assert.ok(request.prompt.includes("strict JSON"))
+        assert.ok(request.prompt.includes("not whether a host permission button was clicked"))
         assert.equal(options.signal, controller.signal)
         assert.deepEqual(Object.keys(request).sort(), ["model", "prompt"])
         return { text: JSON.stringify(allow) }

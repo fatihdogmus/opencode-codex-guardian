@@ -1,7 +1,7 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
 import { Model } from "@opencode/plugin"
 import { parseAssessment } from "../assessment-parser.ts"
-import { buildReviewPrompt } from "../review-policy.ts"
+import { AUTHORIZATION_GUIDANCE, buildReviewPrompt } from "../review-policy.ts"
 import { guardianBody, isCodexURL, primaryBody, ParentResponses, SSEObserver } from "../guardian-protocol.ts"
 import { Diagnostics } from "../diagnostics.ts"
 import { ReviewError } from "../review-error.ts"
@@ -11,7 +11,8 @@ interface ReviewSession {
     sessionID: string
     parentID: string
     sent: boolean
-    usedAt: number
+    protocol?: "sse" | "websocket"
+    cleanup?: Promise<void>
 }
 
 export class CodexAutoReviewTransport implements ReviewerTransport {
@@ -23,6 +24,7 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
     private wsResponses = new Map<string, string>()
     private wsEligible = new Set<string>()
     private closed = false
+    private hooksReady = false
     constructor(private ctx: Context, private diagnostics: Diagnostics) {}
 
     isInternal(sessionID: string): boolean {
@@ -37,7 +39,9 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
     }
 
     async installHooks(): Promise<void> {
-        const reviewer = (sessionID: string) => [...this.reviewers.values()].find((entry) => entry.sessionID === sessionID)
+        this.hooksReady = false
+        const reviewer = (sessionID: string) => this.reviewers.get(sessionID)
+        const requireActive = (entry: ReviewSession) => { if (this.closed || reviewer(entry.sessionID) !== entry) throw new ReviewError("native_session_inactive") }
         await this.ctx.session.hook("prompt", (event) => {
             this.parents.reset(event.sessionID)
             this.wsResponses.delete(event.sessionID)
@@ -46,7 +50,8 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
             if (!this.isInternal(event.sessionID)) return
             if (this.closed || !reviewer(event.sessionID)) throw new ReviewError("native_session_inactive")
             event.tools = {}
-            event.system = []
+            // Only plugin-authored guidance is privileged; never promote review data.
+            event.system = [{ type: "text", text: AUTHORIZATION_GUIDANCE }]
             event.options.reasoningEffort = "low"
         })
         await this.ctx.session.hook("retry", (event) => {
@@ -58,12 +63,14 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
             if (entry) {
                 if (event.kind !== "generate" || !isCodexURL(event.request.url) || !await this.oauthAvailable()) throw new ReviewError("native_route_unavailable")
                 const body = guardianBody(await event.request.clone().json(), entry.parentID, entry.sessionID)
+                requireActive(entry)
                 const headers = new Headers(event.request.headers)
                 headers.set("x-codex-guardian", "reviewer")
                 headers.set("x-openai-subagent", "guardian")
                 headers.delete("x-codex-routing-hint")
                 event.request = new Request(event.request, { headers, body: JSON.stringify(body) })
                 entry.sent = true
+                entry.protocol = "sse"
                 this.recordProtocol()
                 return
             }
@@ -89,6 +96,7 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
             }
             this.wsEligible.add(event.sessionID)
             if (!entry) return
+            requireActive(entry)
             if (event.kind !== "generate") throw new ReviewError("native_request_kind_invalid")
             event.headers["x-codex-guardian"] = "reviewer"
             event.headers["x-openai-subagent"] = "guardian"
@@ -99,11 +107,13 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
             if (this.isInternal(event.sessionID) && (this.closed || !entry)) throw new ReviewError("native_session_inactive")
             if (!entry && (event.kind !== "primary" || !this.wsEligible.has(event.sessionID) || !await this.oauthAvailable())) return
             if (entry && !this.wsEligible.has(event.sessionID)) throw new ReviewError("native_handshake_missing")
+            if (entry) requireActive(entry)
             const body = JSON.parse(event.frame)
             if (body.type !== "response.create") return
             if (entry) {
                 event.frame = JSON.stringify(guardianBody(body, entry.parentID, entry.sessionID))
                 entry.sent = true
+                entry.protocol = "websocket"
                 this.recordProtocol()
             } else {
                 event.frame = JSON.stringify(primaryBody(body))
@@ -115,6 +125,7 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
             const id = this.parents.observe(event.sessionID, JSON.parse(event.frame), this.wsResponses.get(event.sessionID))
             if (id) this.wsResponses.set(event.sessionID, id)
         }, { providerID: "openai" })
+        this.hooksReady = true
     }
 
     private recordProtocol(): void {
@@ -123,48 +134,61 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
         this.diagnostics.guardianSubagent = true
     }
 
+    private retire(entry: ReviewSession): Promise<void> {
+        this.reviewers.delete(entry.sessionID)
+        this.wsEligible.delete(entry.sessionID)
+        this.wsResponses.delete(entry.sessionID)
+        return entry.cleanup ??= this.ctx.session.remove({ sessionID: entry.sessionID }, { signal: AbortSignal.timeout(5_000) }).catch(() => {
+            this.diagnostics.cleanupFailures++
+            throw new ReviewError("native_cleanup_failed")
+        })
+    }
+
     async review(input: ReviewInput, signal: AbortSignal): Promise<GuardianAssessment> {
         signal.throwIfAborted()
+        if (!this.hooksReady) throw new ReviewError("native_hooks_unavailable")
         if (this.closed || !await this.oauthAvailable()) throw new ReviewError("native_oauth_unavailable")
         const parentID = await this.parentResponse(input)
         if (!parentID) throw new ReviewError("parent_response_missing")
-        let entry = this.reviewers.get(input.sessionID)
+        let entry: ReviewSession | undefined
+        const retire = () => entry ? this.retire(entry) : Promise.resolve()
+        const abort = () => { void retire().catch(() => {}) }
         try {
-            if (!entry) {
-                const { data: models } = await this.ctx.model.list()
-                const model = models.find((candidate) => candidate.providerID === "openai" && candidate.enabled && candidate.id !== "codex-auto-review")
-                if (!model) throw new ReviewError("native_model_route_missing")
-                const pending = this.ctx.session.create({
-                    parentID: input.sessionID,
-                    location: { directory: input.cwd },
-                    title: "Auto-review (internal)",
-                    model: Model.Ref.parse(`openai/${model.id}`),
-                    permissions: [{ action: "*", resource: "*", effect: "deny" }],
-                })
-                this.creating.add(pending)
-                let created
-                try { created = await pending } finally { this.creating.delete(pending) }
-                entry = { sessionID: created.id, parentID, sent: false, usedAt: Date.now() }
-                this.internalSessions.add(created.id)
-                this.reviewers.set(input.sessionID, entry)
-            }
+            const { data: models } = await this.ctx.model.list()
+            const model = models.find((candidate) => candidate.providerID === "openai" && candidate.enabled && candidate.id !== "codex-auto-review")
+            if (!model) throw new ReviewError("native_model_route_missing")
             signal.throwIfAborted()
-            entry.parentID = parentID
-            entry.sent = false
-            entry.usedAt = Date.now()
+            if (this.closed) throw new ReviewError("native_session_inactive")
+            const pending = this.ctx.session.create({
+                parentID: input.sessionID,
+                location: { directory: input.cwd },
+                title: "Auto-review (internal)",
+                model: Model.Ref.parse(`openai/${model.id}`),
+                permissions: [{ action: "*", resource: "*", effect: "deny" }],
+            })
+            this.creating.add(pending)
+            let created
+            try { created = await pending } finally { this.creating.delete(pending) }
+            entry = { sessionID: created.id, parentID, sent: false }
+            this.internalSessions.add(created.id)
+            this.reviewers.set(created.id, entry)
+            signal.addEventListener("abort", abort, { once: true })
+            signal.throwIfAborted()
+            if (this.closed) throw new ReviewError("native_session_inactive")
             const result = await this.ctx.session.generate({ sessionID: entry.sessionID, prompt: buildReviewPrompt(input) }, { signal })
             signal.throwIfAborted()
             if (!entry.sent) throw new ReviewError("native_hook_missing")
             const assessment = parseAssessment(result.text)
             this.diagnostics.nativeState = "NATIVE_WORKS_ACCOUNTING_UNKNOWN"
+            this.diagnostics.protocol = entry.protocol
+            input.protocol = entry.protocol
             return assessment
         } catch (error) {
             this.diagnostics.nativeState = "NATIVE_UNAVAILABLE"
-            if (entry) {
-                this.reviewers.delete(input.sessionID)
-                await this.ctx.session.remove({ sessionID: entry.sessionID }).catch(() => {})
-            }
             throw error
+        } finally {
+            signal.removeEventListener("abort", abort)
+            await retire()
         }
     }
 
@@ -187,17 +211,12 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
             this.wsResponses.delete(sessionID)
             this.wsEligible.delete(sessionID)
         }
-        for (const [key, entry] of this.reviewers) {
-            if (Date.now() - entry.usedAt < 300_000) continue
-            this.reviewers.delete(key)
-            await this.ctx.session.remove({ sessionID: entry.sessionID }).catch(() => {})
-        }
     }
 
     async close(): Promise<void> {
         this.closed = true
         await Promise.allSettled(this.creating)
-        await Promise.allSettled([...this.reviewers.values()].map((entry) => this.ctx.session.remove({ sessionID: entry.sessionID })))
+        await Promise.allSettled([...this.reviewers.values()].map((entry) => this.retire(entry)))
         this.reviewers.clear()
         this.parents.clear()
         this.wsResponses.clear()

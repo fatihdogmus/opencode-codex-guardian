@@ -1,4 +1,4 @@
-import { redact } from "./utils/redaction.ts"
+import { redact, redactValue } from "./utils/redaction.ts"
 import { ReviewError } from "./review-error.ts"
 import type { PermissionEvent, ReviewInput, ReviewMessage } from "./types.ts"
 
@@ -6,14 +6,18 @@ export function buildReviewInput(event: PermissionEvent, messages: readonly unkn
     const entries = messages.filter((message): message is Record<string, unknown> => !!message && typeof message === "object")
     const users = entries.filter((message) => message.type === "user" && typeof message.text === "string")
     const latest = users.at(-1)
+    if (entries.some((message) => message.type === "compaction")) throw new ReviewError("context_compacted")
     if (!latest || !String(latest.text).trim()) throw new ReviewError("context_missing_user_intent")
     const input: ReviewInput = {
         sessionID: event.sessionID,
         userIntent: redact(String(latest.text)),
-        priorUserInstructions: users.slice(0, -1).map((message) => redact(String(message.text))),
+        userInstructions: users.map((message, turn) => {
+            const timestamp = (message.time as { created?: unknown } | undefined)?.created
+            return { text: redact(String(message.text)), turn, isCurrent: turn === users.length - 1, ...(typeof timestamp === "number" && Number.isFinite(timestamp) ? { timestamp } : {}) }
+        }),
         action: event.action,
         resources: event.resources.map(redact),
-        metadata: event.metadata ? JSON.parse(redact(JSON.stringify(event.metadata))) : undefined,
+        metadata: event.metadata ? redactValue(event.metadata) : undefined,
         recentContext: [],
         explicitAuthorizations: [],
         cwd,

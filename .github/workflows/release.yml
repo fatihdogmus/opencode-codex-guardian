@@ -35,6 +35,9 @@ jobs:
           node-version: 26
       - name: Validate release version
         run: node --input-type=module -e 'import fs from "node:fs"; const { version } = JSON.parse(fs.readFileSync("package.json", "utf8")); if (process.env.RELEASE_TAG !== `v${version}`) throw new Error("Tag must match package.json version");'
+      - run: npm ci --ignore-scripts
+      - name: Gate on complete live model benchmarks
+        run: npm run benchmark:release
       - name: Download verified package
         run: gh run download "$GITHUB_RUN_ID" --name opencode-codex-guardian --dir artifacts
       - name: Create draft only

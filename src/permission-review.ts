@@ -3,9 +3,35 @@ import { parseAssessment } from "./assessment-parser.ts"
 import { CircuitBreaker } from "./circuit-breaker.ts"
 import { Diagnostics } from "./diagnostics.ts"
 import { effectiveDecision } from "./review-policy.ts"
-import { redact } from "./utils/redaction.ts"
+import { safeRenderRationale } from "./utils/safe-render.ts"
+import { normalizeAction } from "./action-normalizer.ts"
+import { runPreflight } from "./preflight.ts"
+import { targetsProtectedResource } from "./self-protection.ts"
 import { ReviewError } from "./review-error.ts"
-import type { PermissionEvent, ReviewerTransport, ReviewInput } from "./types.ts"
+import { hash } from "./utils/hashing.ts"
+import { redactValue } from "./utils/redaction.ts"
+import { enrichEvidence } from "./evidence.ts"
+import { AuditLog, type ReviewAuditRecord } from "./audit.ts"
+import { Authorizations } from "./authorization.ts"
+import { SessionApprovals } from "./session-approvals.ts"
+import type { PermissionEvent, ReviewerTransport, ReviewInput, EffectiveDecision, GuardianAssessment } from "./types.ts"
+
+interface ReviewResult {
+    decision: EffectiveDecision
+    assessment?: GuardianAssessment
+    preflight?: string
+    reason?: string
+    circuitBreaker?: boolean
+    cached?: boolean
+    failure?: string
+}
+export interface ReviewServices {
+    configurationInvalid?: boolean
+    audit?: AuditLog
+    authorizations?: Authorizations
+    approvals?: SessionApprovals
+    actionContext?: (event: PermissionEvent) => Promise<{ cwd: string; metadata?: Record<string, unknown> }>
+}
 
 export class PermissionReviewer {
     private queues = new Map<string, Promise<void>>()
@@ -16,6 +42,8 @@ export class PermissionReviewer {
         private breaker: CircuitBreaker,
         private diagnostics: Diagnostics,
         private isInternal: (sessionID: string) => boolean = () => false,
+        private protectedPaths: readonly string[] = [],
+        private services: ReviewServices = {},
     ) {}
     async evaluate(event: PermissionEvent): Promise<void> {
         if (this.isInternal(event.sessionID)) { event.effect = "deny"; event.message = "Reviewer has no tool permissions"; return }
@@ -30,31 +58,62 @@ export class PermissionReviewer {
         const started = Date.now()
         const controller = new AbortController()
         let timer: ReturnType<typeof setTimeout> | undefined
+        let input: ReviewInput | undefined
+        let action: ReviewInput["normalized"]
+        let result: ReviewResult
         try {
-            const work = async () => {
-                const input = await this.context(event)
+            const work = async (): Promise<ReviewResult> => {
+                if (this.services.configurationInvalid) return { decision: "deny", failure: "configuration_invalid", reason: "Trusted Guardian configuration is invalid" }
+                const actionContext = this.services.actionContext ? await this.services.actionContext(event) : (input = await this.context(event))
                 controller.signal.throwIfAborted()
-                if (this.breaker.tripped(input)) return { decision: this.config.circuitBreaker.effect, circuitBreaker: true } as const
+                action = await normalizeAction(event.action, event.resources, actionContext.cwd, actionContext.metadata)
+                controller.signal.throwIfAborted()
+                if (this.config.preflight.enabled) {
+                    const preflight = runPreflight(action)
+                    if (preflight.kind !== "continue") return { decision: preflight.kind, preflight: preflight.rule, reason: preflight.reason }
+                }
+                if (this.config.selfProtection.enabled && targetsProtectedResource(action, [...this.protectedPaths, ...this.config.selfProtection.protectedPaths])) return { decision: "ask", reason: "Protected Guardian or OpenCode configuration requires human approval", preflight: "self_protection" }
+                input ??= await this.context(event)
+                input.cwd = action.cwd
+                input.normalized = redactValue(action)
+                input.actionHash = action.rawHash
+                input.protocol = undefined
+                input.explicitAuthorizations = this.services.authorizations?.get(input) ?? []
+                controller.signal.throwIfAborted()
+                if (!this.config.shadow && this.services.authorizations?.consume(input)) return { decision: "allow", cached: true, reason: "Exact host-approved retry" }
+                if (this.breaker.tripped(input)) return { decision: this.config.circuitBreaker.effect, circuitBreaker: true }
+                if (!this.config.shadow && this.services.approvals?.has(input)) return { decision: "allow", cached: true }
+                if (this.services.actionContext) input.evidence = await enrichEvidence(input, this.config.evidence, controller.signal)
+                if (JSON.stringify(input).length > this.config.contextMaxChars) throw new ReviewError("context_oversized")
                 const assessment = parseAssessment(await this.transport.review(input, controller.signal))
                 controller.signal.throwIfAborted()
                 const decision = effectiveDecision(assessment)
-                if (decision === "deny") this.breaker.deny(input)
                 return { decision, assessment }
             }
             const timeout = new Promise<never>((_, reject) => {
                 timer = setTimeout(() => { controller.abort(); reject(new ReviewError("timeout")) }, this.config.timeoutMs)
             })
-            const result = await Promise.race([work(), timeout])
-            event.effect = result.decision
-            event.message = "Auto-review: " + (result.assessment ? redact(result.assessment.rationale) : "Repeated denied action requires human approval")
-            this.diagnostics.lastReview = { ...result, transport: this.transport.name, durationMs: Date.now() - started }
+            result = await Promise.race([work(), timeout])
         } catch (error) {
-            event.effect = this.config.failureMode
-            event.message = this.config.failureMode === "ask" ? "Auto-review unavailable or invalid; manual approval required" : "Auto-review unavailable or invalid; action denied"
-            this.diagnostics.lastReview = { decision: event.effect, transport: this.transport.name, durationMs: Date.now() - started, failure: error instanceof ReviewError ? error.code : "provider_or_schema_failure" }
+            result = { decision: this.config.failureMode, failure: error instanceof ReviewError ? error.code : "review_boundary_failure", reason: "Auto-review unavailable or invalid; manual approval required" }
         } finally {
             clearTimeout(timer)
-            if (this.config.logging.enabled) console.info("auto-review", JSON.stringify({ action: redact(event.action).slice(0, 100), transport: this.transport.name, decision: event.effect, risk: this.diagnostics.lastReview?.assessment?.risk_level, authorization: this.diagnostics.lastReview?.assessment?.user_authorization, failure: this.diagnostics.lastReview?.failure, circuitBreaker: this.diagnostics.lastReview?.circuitBreaker, durationMs: Date.now() - started }))
         }
+        const decision = this.config.shadow ? "ask" : result.decision
+        const record: ReviewAuditRecord = { timestamp: new Date().toISOString(), sessionHash: hash(event.sessionID), actionType: action?.category ?? "unknown", resourceHash: action?.rawHash ?? hash(JSON.stringify([event.action, event.resources])), transport: input?.reviewTransport ?? (result.assessment ? this.transport.name : "none"), mode: this.config.shadow ? "shadow" : "active", guardianDecision: result.assessment?.outcome, proposedDecision: result.decision, effectiveDecision: decision, riskLevel: result.assessment?.risk_level, authorizationLevel: result.assessment?.user_authorization, latencyMs: Date.now() - started, parentLinked: !!input?.protocol, protocol: input?.protocol, preflight: result.preflight, failure: result.failure, cached: result.cached }
+        event.effect = decision
+        try { await this.services.audit?.write(record); if (this.services.audit && this.config.audit.enabled) this.diagnostics.auditHealthy = true } catch {
+            this.diagnostics.auditHealthy = false
+            result.failure = "audit_write_failed"
+            event.effect = this.config.shadow ? "ask" : event.effect === "deny" ? "deny" : this.config.failureMode
+        }
+        if (input && !this.config.shadow) {
+            if (event.effect === "deny") this.breaker.deny(input)
+            if (event.effect === "allow" && result.assessment?.risk_level === "low") this.services.approvals?.grant(input)
+        }
+        if (event.effect === "ask" && input) this.services.authorizations?.track(event, input)
+        event.message = event.effect === "allow" ? undefined : this.config.shadow ? "Guardian shadow mode: human approval required" : "Auto-review: " + safeRenderRationale(result.failure ? "Review could not be safely completed; human approval required" : result.assessment?.rationale ?? result.reason ?? "Repeated denied action requires human approval")
+        this.diagnostics.lastReview = { ...result, decision: event.effect, proposedDecision: result.decision, assessment: result.assessment ? { ...result.assessment, rationale: safeRenderRationale(result.assessment.rationale) } : undefined, transport: record.transport, durationMs: record.latencyMs }
+        if (this.config.logging.enabled) console.info("auto-review", JSON.stringify({ ...record, effectiveDecision: event.effect, failure: result.failure }))
     }
 }
