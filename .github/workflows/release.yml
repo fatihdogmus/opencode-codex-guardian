@@ -1,4 +1,4 @@
-name: Prepare draft release
+name: Release
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: prepare-release
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -25,20 +25,36 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: npm
     permissions:
       contents: write
+      id-token: write
     env:
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 26
+          registry-url: https://registry.npmjs.org/
           package-manager-cache: false
+      - name: Require the current main commit
+        run: |
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)"
+      - name: Check npm credentials before changing the version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "Set the NPM_TOKEN secret before releasing."
+            exit 1
+          fi
+          npm whoami --registry https://registry.npmjs.org/
       - run: npm ci --ignore-scripts
       - name: Gate release before changing the version
         run: npm run benchmark:release
@@ -66,6 +82,13 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.bump.outputs.tag }}
         run: node scripts/validate-release.mjs "$RELEASE_TAG" artifacts/*.tgz
+      - name: Save tested package for recovery
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: opencode-codex-guardian-release
+          path: artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 14
       - name: Commit version and push matching tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,8 +103,12 @@ jobs:
           git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
           gh auth setup-git
           git push --atomic origin HEAD:main "refs/tags/$RELEASE_TAG"
-      - name: Create draft only
+      - name: Publish tested tarball to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./artifacts/*.tgz --ignore-scripts --access public --provenance --tag latest --registry https://registry.npmjs.org/
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.bump.outputs.tag }}
-        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --title "$RELEASE_TAG" --generate-notes --draft
+        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --title "$RELEASE_TAG" --generate-notes

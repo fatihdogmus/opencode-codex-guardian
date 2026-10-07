@@ -183,12 +183,13 @@ These checks use real inference and temporary sessions; the execution probe perm
 ## Build and release workflows
 
 - **Build** runs on pushes to `main`, pull requests, and manual dispatch. It validates, builds, packs, smoke-tests, and uploads the package as a workflow artifact without accessing ChatGPT credentials.
-- **Prepare draft release** is manual. Run it on `main` and choose `patch`, `minor`, or `major` (default: `patch`). It increments `package.json` and `package-lock.json`, validates the package, commits the version change as `github-actions[bot]`, and pushes `main` with the matching `vX.Y.Z` tag before creating a draft with the tested package attached. Failed checks do not push a version bump.
-- **Publish to npm** runs when you publish a non-prerelease GitHub release. It reruns validation and publishes the tested tarball as `@fatihdogmus/opencode-codex-guardian` with public access and provenance. Drafts, pushes, and pull requests never publish to npm.
+- **Release** is a single manual workflow. Run it on `main` and choose `patch`, `minor`, or `major` (default: `patch`). It validates, updates both package files, commits the version as `github-actions[bot]`, pushes the matching tag, publishes the tested package to npm with public access and provenance, and creates a published GitHub release. No drafts or second publish action are needed. Pushes and pull requests never publish to npm.
 
-For maintainers: add a GitHub Actions secret named `NPM_TOKEN`, using an npm granular token with read/write publishing access to the `@fatihdogmus` scope and **Bypass 2FA** enabled. The token must allow creating the package for the first release. The publish job uses the `npm` GitHub environment; configure required reviewers there if you want an extra approval before publication. The secret can be repository-scoped or environment-scoped. Keep it out of configuration files and rotate it before expiration.
+For maintainers: add a GitHub Actions secret named `NPM_TOKEN`, using an npm granular token with read/write publishing access to the `@fatihdogmus` scope and **Bypass 2FA** enabled. The token must allow creating the package for the first release. The release job uses the `npm` GitHub environment; the secret can be repository-scoped or environment-scoped. Keep it out of configuration files and rotate it before expiration.
 
 Version commits and tags use the workflow's `GITHUB_TOKEN`; branch and tag rules must permit these writes. The workflow never force-pushes or bypasses protection. If a push is rejected, resolve the repository policy before retrying.
+
+Checks must pass before the version commit is pushed. GitHub and npm publication are not atomic: if publication fails after the push, the version commit and tag remain. Recover that version using the saved package artifact rather than starting another version bump; an already published npm version cannot be overwritten.
 
 ## License
 
