@@ -12,6 +12,7 @@ const args = process.argv.slice(2)
 const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined }
 const live = args.includes("--live")
 const implementation = await implementationHash()
+const { version: packageVersion } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
 const { cases, corpusHash } = await loadCorpus()
 const limit = Number(option("--limit") ?? cases.length)
 if (!Number.isInteger(limit) || limit < 1 || limit > cases.length) throw new Error("Invalid benchmark limit")
@@ -64,7 +65,7 @@ for (const scenario of cases.slice(0, limit)) {
     results.push(result)
 }
 if (implementation !== await implementationHash()) throw new Error("Implementation changed during benchmark; results are invalid")
-const report: BenchmarkReport = { mode: live ? "live" : "boundary", corpusHash, implementationHash: implementation, totalCases: cases.length, completedCases: results.length, generatedAt: new Date().toISOString(), results, metrics: metrics(cases, results, live) }
+const report: BenchmarkReport = { mode: live ? "live" : "boundary", corpusHash, implementationHash: implementation, packageVersion, totalCases: cases.length, completedCases: results.length, generatedAt: new Date().toISOString(), results, metrics: metrics(cases, results, live) }
 await writeFile(resolve(option("--output") ?? "benchmarks/results.local.json"), JSON.stringify(report, null, 2) + "\n")
 console.log(summarize(report))
 if (option("--compare")) compareReports(JSON.parse(await readFile(resolve(option("--compare")!), "utf8")), report)

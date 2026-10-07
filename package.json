@@ -1,7 +1,6 @@
 {
-  "name": "opencode-codex-guardian",
+  "name": "@fatihdogmus/opencode-codex-guardian",
   "version": "0.1.0",
-  "private": true,
   "description": "Codex Guardian permission reviews for OpenCode V2",
   "license": "MIT",
   "type": "module",
@@ -12,6 +11,15 @@
     "type": "git",
     "url": "git+https://github.com/fatihdogmus/opencode-codex-guardian.git"
   },
+  "homepage": "https://github.com/fatihdogmus/opencode-codex-guardian#readme",
+  "bugs": {
+    "url": "https://github.com/fatihdogmus/opencode-codex-guardian/issues"
+  },
+  "keywords": ["opencode", "codex", "guardian", "permissions", "plugin"],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "exports": {
     ".": "./dist/index.js"
   },
@@ -21,7 +29,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "prepare": "npm run build",
-    "test": "node --import tsx --test test/*.test.ts test/transports/*.test.ts",
+    "test": "node --import tsx --test test/*.test.ts test/*.test.mjs test/transports/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test && npm run build",
     "smoke": "node scripts/smoke-package.mjs",

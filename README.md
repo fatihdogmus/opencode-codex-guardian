@@ -24,7 +24,9 @@ OpenAI API-key connections and custom provider aliases are not supported by the 
 
 ## Install and enable
 
-The package is not published to npm. Clone and build it locally:
+Once published, add `@fatihdogmus/opencode-codex-guardian` to your OpenCode plugin configuration. No separate `npm install` is needed.
+
+To use a local checkout instead:
 
 ```sh
 git clone https://github.com/fatihdogmus/opencode-codex-guardian.git
@@ -40,7 +42,7 @@ Add this entry to your project `opencode.json(c)` or `.opencode/opencode.json(c)
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "/absolute/path/to/opencode-codex-guardian",
+      "package": "@fatihdogmus/opencode-codex-guardian",
       "options": {
         "enabled": true,
         "transport": "codex-auto-review",
@@ -52,7 +54,7 @@ Add this entry to your project `opencode.json(c)` or `.opencode/opencode.json(c)
 }
 ```
 
-Replace the path with your clone's location. Relative plugin paths resolve from the configuration file containing the entry. **Loading this plugin enables the hardened baseline by default.** OpenCode does not expose the provenance of plugin options, so options in any OpenCode config are treated as unknown-origin: they may tighten security, not weaken it.
+For a local checkout, replace the package name with the absolute path to your clone. Relative plugin paths resolve from the configuration file containing the entry. **Loading this plugin enables the hardened baseline by default.** OpenCode does not expose the provenance of plugin options, so options in any OpenCode config are treated as unknown-origin: they may tighten security, not weaken it.
 
 Set trusted policy separately in `~/.config/opencode/codex-guardian.json` (or `$XDG_CONFIG_HOME/opencode/codex-guardian.json`). For example, to evaluate decisions without applying them:
 
@@ -163,7 +165,7 @@ npm ci --ignore-scripts
 npm run check
 mkdir -p artifacts
 npm pack --ignore-scripts --pack-destination artifacts
-npm run smoke -- artifacts/opencode-codex-guardian-0.1.0.tgz
+npm run smoke -- artifacts/fatihdogmus-opencode-codex-guardian-0.1.0.tgz
 ```
 
 `check` runs TypeScript checking, tests, and the build. `smoke` verifies that the packed plugin installs and works without TypeScript tooling or install scripts.
@@ -181,8 +183,12 @@ These checks use real inference and temporary sessions; the execution probe perm
 ## Build and release workflows
 
 - **Build** runs on pushes to `main`, pull requests, and manual dispatch. It validates, builds, packs, smoke-tests, and uploads the package as a workflow artifact without accessing ChatGPT credentials.
-- **Prepare draft release** is manual. On `main`, it requires build and security checks before creating a **draft** GitHub release for a tag matching the package version. It does not run authenticated model requests in CI or publish the release.
-- No npm publishing workflow is configured. `package.json` has `private: true` to prevent accidental npm publication.
+- **Prepare draft release** is manual. Run it on `main` and choose `patch`, `minor`, or `major` (default: `patch`). It increments `package.json` and `package-lock.json`, validates the package, commits the version change as `github-actions[bot]`, and pushes `main` with the matching `vX.Y.Z` tag before creating a draft with the tested package attached. Failed checks do not push a version bump.
+- **Publish to npm** runs when you publish a non-prerelease GitHub release. It reruns validation and publishes the tested tarball as `@fatihdogmus/opencode-codex-guardian` with public access and provenance. Drafts, pushes, and pull requests never publish to npm.
+
+For maintainers: add a GitHub Actions secret named `NPM_TOKEN`, using an npm granular token with read/write publishing access to the `@fatihdogmus` scope and **Bypass 2FA** enabled. The token must allow creating the package for the first release. The publish job uses the `npm` GitHub environment; configure required reviewers there if you want an extra approval before publication. The secret can be repository-scoped or environment-scoped. Keep it out of configuration files and rotate it before expiration.
+
+Version commits and tags use the workflow's `GITHUB_TOKEN`; branch and tag rules must permit these writes. The workflow never force-pushes or bypasses protection. If a push is rejected, resolve the repository policy before retrying.
 
 ## License
 

@@ -3,42 +3,85 @@ name: Prepare draft release
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: Release tag matching package.json version (for example v0.1.0)
+      bump:
+        description: Semantic version increment
         required: true
-        type: string
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: read
 
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
 jobs:
-  build:
-    uses: ./.github/workflows/build.yml
   release:
-    needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: write
-      actions: read
     env:
-      RELEASE_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          ref: main
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 26
-      - name: Validate release version
-        run: node --input-type=module -e 'import fs from "node:fs"; const { version } = JSON.parse(fs.readFileSync("package.json", "utf8")); if (process.env.RELEASE_TAG !== `v${version}`) throw new Error("Tag must match package.json version");'
+          package-manager-cache: false
       - run: npm ci --ignore-scripts
-      - name: Gate on complete live model benchmarks
+      - name: Gate release before changing the version
         run: npm run benchmark:release
-      - name: Download verified package
-        run: gh run download "$GITHUB_RUN_ID" --name opencode-codex-guardian --dir artifacts
+      - name: Bump package and lockfile versions
+        id: bump
+        env:
+          VERSION_BUMP: ${{ inputs.bump }}
+        run: node scripts/bump-release.mjs "$VERSION_BUMP"
+      - name: Require a new release tag
+        env:
+          RELEASE_TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            echo "Release tag already exists: $RELEASE_TAG"
+            exit 1
+          fi
+      - run: npm run check
+      - run: npm run benchmark -- --compare benchmarks/baseline.boundary.json
+      - name: Gate the versioned release
+        run: npm run benchmark:release
+      - run: mkdir -p artifacts
+      - run: npm pack --ignore-scripts --pack-destination artifacts
+      - run: npm run smoke -- artifacts/*.tgz
+      - name: Validate tested package
+        env:
+          RELEASE_TAG: ${{ steps.bump.outputs.tag }}
+        run: node scripts/validate-release.mjs "$RELEASE_TAG" artifacts/*.tgz
+      - name: Commit version and push matching tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          git diff --check
+          git diff --exit-code -- . ':!package.json' ':!package-lock.json'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json
+          git commit -m "chore(release): $RELEASE_TAG"
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          gh auth setup-git
+          git push --atomic origin HEAD:main "refs/tags/$RELEASE_TAG"
       - name: Create draft only
-        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes --draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.bump.outputs.tag }}
+        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --title "$RELEASE_TAG" --generate-notes --draft

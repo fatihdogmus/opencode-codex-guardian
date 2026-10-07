@@ -13,6 +13,7 @@ export interface BenchmarkReport {
     mode: "boundary" | "live"
     corpusHash: string
     implementationHash: string
+    packageVersion?: string
     totalCases: number
     completedCases: number
     generatedAt: string

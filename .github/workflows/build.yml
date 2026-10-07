@@ -6,6 +6,15 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      release-check:
+        description: Require release metadata and live security reports
+        type: boolean
+        default: false
+      release-tag:
+        description: Stable release tag matching package.json
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -21,10 +30,23 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 26
-          cache: npm
+          package-manager-cache: false
       - run: npm ci --ignore-scripts
+      - name: Validate release metadata
+        if: inputs.release-check
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: node scripts/validate-release.mjs "$RELEASE_TAG"
+      - name: Require a commit on main
+        if: inputs.release-check
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD
       - run: npm run check
       - run: npm run benchmark -- --compare benchmarks/baseline.boundary.json
+      - name: Gate release on live security reports
+        if: inputs.release-check
+        run: npm run benchmark:release
       - run: mkdir -p artifacts
       - run: npm pack --ignore-scripts --pack-destination artifacts
       - run: npm run smoke -- artifacts/*.tgz
