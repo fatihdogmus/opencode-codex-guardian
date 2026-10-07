@@ -1,6 +1,6 @@
 {
   "name": "@fatihdogmus/opencode-codex-guardian",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Codex Guardian permission reviews for OpenCode V2",
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,13 @@
   "bugs": {
     "url": "https://github.com/fatihdogmus/opencode-codex-guardian/issues"
   },
-  "keywords": ["opencode", "codex", "guardian", "permissions", "plugin"],
+  "keywords": [
+    "opencode",
+    "codex",
+    "guardian",
+    "permissions",
+    "plugin"
+  ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
