@@ -34,9 +34,7 @@
     "check": "npm run typecheck && npm test && npm run build",
     "smoke": "node scripts/smoke-package.mjs",
     "verify:live": "node --import tsx scripts/verify-live.ts",
-    "verify:code-mode": "node --import tsx scripts/verify-code-mode.ts",
-    "benchmark": "node --import tsx benchmarks/run.ts",
-    "benchmark:release": "node --import tsx benchmarks/check-release.ts"
+    "verify:code-mode": "node --import tsx scripts/verify-code-mode.ts"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.24",

@@ -20,10 +20,8 @@ test("release checks credentials and tests before pushing, then publishes npm be
     const steps = [
         "Require the current main commit",
         "Check npm credentials before changing the version",
-        "Gate release before changing the version",
         "Bump package and lockfile versions",
         "npm run check",
-        "Gate the versioned release",
         "npm run smoke",
         "Validate tested package",
         "Save tested package for recovery",

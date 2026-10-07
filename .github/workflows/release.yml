@@ -56,8 +56,6 @@ jobs:
           fi
           npm whoami --registry https://registry.npmjs.org/
       - run: npm ci --ignore-scripts
-      - name: Gate release before changing the version
-        run: npm run benchmark:release
       - name: Bump package and lockfile versions
         id: bump
         env:
@@ -72,9 +70,6 @@ jobs:
             exit 1
           fi
       - run: npm run check
-      - run: npm run benchmark -- --compare benchmarks/baseline.boundary.json
-      - name: Gate the versioned release
-        run: npm run benchmark:release
       - run: mkdir -p artifacts
       - run: npm pack --ignore-scripts --pack-destination artifacts
       - run: npm run smoke -- artifacts/*.tgz

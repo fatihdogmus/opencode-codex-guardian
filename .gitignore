@@ -6,4 +6,3 @@ verification.local.json
 verification.*.local.json
 .env
 .env.*
-benchmarks/results*.local.json
