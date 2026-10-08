@@ -1,6 +1,6 @@
 {
   "name": "@fatihdogmus/opencode-codex-guardian",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Codex Guardian permission reviews for OpenCode V2",
   "license": "MIT",
   "type": "module",
