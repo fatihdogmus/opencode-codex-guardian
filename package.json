@@ -43,6 +43,7 @@
     "verify:code-mode": "node --import tsx scripts/verify-code-mode.ts"
   },
   "dependencies": {
+    "@opencode/client": "2.0.24",
     "@opencode/plugin": "2.0.24",
     "tree-sitter-bash": "0.25.1",
     "web-tree-sitter": "0.27.0"

@@ -105,7 +105,7 @@ Without OAuth or a matching Codex parent response, native review fails. For exam
 - Repository text, tool output, assistant messages, and action metadata are treated as untrusted data, not evidence of user authorization.
 - Direct, scoped user requests inform authorization independently of host approval. Only fixed plugin-authored guidance is privileged; repository and tool content cannot become reviewer policy.
 - Critical-risk actions are denied. High-risk actions require matching high authorization; insufficiently authorized medium-risk approvals remain `ask`.
-- Missing or incomplete context, malformed responses, provider errors, and timeouts use the configured failure mode, defaulting to `ask`. Earlier user restrictions remain in force unless explicitly superseded; compaction does not discard them.
+- Missing or incomplete context, malformed responses, provider errors, and timeouts use the configured failure mode, defaulting to `ask`. Compacted sessions restore original user turns from a matching authenticated local-service archive; private/remote hosts without that archive stay manual. Summaries never replace earlier restrictions.
 - Equivalent denied actions are tracked per session; repeated denials can require human approval.
 - Review packets are sent to the chosen model provider. Secret redaction is best effort, not a guarantee that sensitive content cannot be transmitted.
 - Model judgments are not a security sandbox. The plugin does not replace operating-system restrictions or guarantee protection against prompt injection.
@@ -122,7 +122,7 @@ Without OAuth or a matching Codex parent response, native review fails. For exam
 | `fallbackModel` | Unset | Explicit `provider/model` for ordinary model reviews. |
 | `failureMode` | `"ask"` | Leave failures for human approval, or use `deny`. |
 | `timeoutMs` | `15000` | Maximum review time; `reviewer.timeoutMs` is an alias. |
-| `contextMaxChars` | `24000` | Maximum serialized review packet size, in characters. |
+| `contextMaxChars` | `100000` | Maximum serialized review packet size. Optional context is trimmed first; user instructions and exact actions are never truncated. |
 | `logging.enabled` | `true` | Log bounded review diagnostics and decisions. |
 | `circuitBreaker.enabled` | `true` | Track repeated equivalent denials. |
 | `circuitBreaker.maxEquivalentDenials` | `3` | Denial threshold. |
@@ -144,7 +144,7 @@ Ordinary model review is opt-in **in the trusted policy file**: set `transport` 
 
 ### Audit and evidence
 
-Audit records contain hashed identifiers, decision labels, transport, latency, and failure codes—not raw commands, rationale, conversations, or credentials. Hashes are not encryption; low-entropy inputs can be guessed. Logs use private permissions, reject symlinks, and rotate under a cross-process lock. A lock left by a crashed process requires manual recovery.
+Audit records contain hashed identifiers, decisions, transport, latency, failure stage, and allowlisted error codes—not raw commands, rationale, conversations, credentials, or exception messages. Hashes are not encryption; low-entropy inputs can be guessed. Logs use private permissions, reject symlinks, and rotate under a cross-process lock. A lock left by a crashed process requires manual recovery.
 
 Default audit location:
 
@@ -152,7 +152,7 @@ Default audit location:
 - macOS: `~/Library/Application Support/opencode/codex-guardian/reviews.jsonl`.
 - Windows: `%LOCALAPPDATA%/opencode/codex-guardian/reviews.jsonl`.
 
-Read-only evidence gathers bounded filesystem and Git metadata without reading file contents or using the network. It informs risk, never authorization.
+Read-only evidence gathers bounded filesystem and Git metadata without reading file contents or using the network. Unavailable optional metadata is reported explicitly rather than blocking review; it never grants authorization or lowers risk.
 
 Session caching is off by default and limited to an exact, low-risk bare `git status`. Scripts, wrappers, writes, and other risky operations are never cached. New user instructions or non-read tool completions invalidate entries.
 

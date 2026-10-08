@@ -21,3 +21,13 @@ test("canonicalization follows existing symlink parents of new files", async (t)
     const action = await normalizeAction("write", [join(directory, "alias/new.json")], directory)
     assert.equal(targetsProtectedResource(action, [join(directory, "private")]), true)
 })
+
+test("captured read-only log access can reach review without exempting mutations or unknown callers", async () => {
+    const resources = ["/guardian/*"]
+    for (const tool of ["read", "glob", "grep", "edit", "shell", undefined]) {
+        const metadata = tool ? { exactToolName: tool, exactToolInput: { path: "/guardian/logs" } } : undefined
+        const action = await normalizeAction("external_directory", resources, "/workspace", metadata)
+        assert.equal(targetsProtectedResource(action, ["/guardian"]), !["read", "glob", "grep"].includes(tool ?? ""))
+    }
+    assert.equal(targetsProtectedResource(await normalizeAction("edit", ["/guardian/logs"], "/workspace"), ["/guardian"]), true)
+})

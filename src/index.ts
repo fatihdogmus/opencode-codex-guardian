@@ -8,6 +8,7 @@ import { AuditLog } from "./audit.ts"
 import { Authorizations } from "./authorization.ts"
 import { SessionApprovals } from "./session-approvals.ts"
 import { buildReviewInput } from "./review-context.ts"
+import { loadReviewHistory } from "./review-history.ts"
 import { CircuitBreaker } from "./circuit-breaker.ts"
 import { Diagnostics } from "./diagnostics.ts"
 import { PermissionReviewer } from "./permission-review.ts"
@@ -37,13 +38,17 @@ const plugin: Plugin = {
         const breaker = new CircuitBreaker(config.circuitBreaker)
         const generic = config.fallbackModel ? new OpenCodeModelTransport(ctx, config.fallbackModel) : undefined
         const transport = new SelectingTransport(config, native, generic, diagnostics)
-        const pending = new Map<string, unknown>()
-        const actionContext = async (event: Parameters<PermissionReviewer["evaluate"]>[0]) => {
-            const session = await ctx.session.get({ sessionID: event.sessionID })
-            const input = event.source ? pending.get(`${event.sessionID}:${event.source.id}`) : undefined
+        const pending = new Map<string, { tool: string; input: unknown; messageID: string }>()
+        const actionContext = async (event: Parameters<PermissionReviewer["evaluate"]>[0], signal: AbortSignal) => {
+            const session = await ctx.session.get({ sessionID: event.sessionID }, { signal })
+            const candidate = event.source ? pending.get(`${event.sessionID}:${event.source.id}`) : undefined
+            const captured = candidate?.messageID === event.source?.messageID ? candidate : undefined
+            const input = captured?.input
             const metadata = { ...event.metadata }
             delete metadata.exactToolInput
+            delete metadata.exactToolName
             if (input !== undefined) metadata.exactToolInput = input
+            if (captured) metadata.exactToolName = captured.tool
             let cwd = session.location.directory as string
             if (["shell", "bash"].includes(event.action) && input && typeof input === "object") {
                 const values = input as Record<string, unknown>
@@ -55,10 +60,10 @@ const plugin: Plugin = {
             }
             return { cwd, metadata }
         }
-        const reviewer = new PermissionReviewer(config, transport, async (event) => {
-            const context = await actionContext(event)
-            const messages = await ctx.session.context({ sessionID: event.sessionID })
-            return buildReviewInput({ ...event, metadata: context.metadata }, messages, context.cwd, config.contextMaxChars)
+        const reviewer = new PermissionReviewer(config, transport, async (event, signal) => {
+            const context = await actionContext(event, signal)
+            const history = await loadReviewHistory(ctx.session, event.sessionID, signal)
+            return buildReviewInput({ ...event, metadata: context.metadata }, history.messages, context.cwd, config.contextMaxChars, history.complete)
         }, breaker, diagnostics, (sessionID) => native.isInternal(sessionID), [...defaultProtectedPaths(pluginRoot, ctx.location.directory), loaded.path, dirname(audit.path)], {
             audit, authorizations, approvals, configurationInvalid: loaded.invalid,
             actionContext,
@@ -68,7 +73,7 @@ const plugin: Plugin = {
             try { await native.installHooks() } catch { diagnostics.nativeStartupFailure = "native_hooks_unavailable" }
         }
         await ctx.tool.hook("execute.before", (event) => {
-            pending.set(`${event.sessionID}:${event.id}`, event.input)
+            pending.set(`${event.sessionID}:${event.id}`, { tool: event.tool, input: event.input, messageID: event.messageID })
             if (pending.size > 1_000) pending.delete(pending.keys().next().value!)
         })
         await ctx.tool.hook("execute.after", (event) => { pending.delete(`${event.sessionID}:${event.id}`); authorizations.finish(event.sessionID, event.id); approvals.finish(event.sessionID, event.id, event.tool) })

@@ -157,3 +157,12 @@ test("invalid configuration fails closed while preserving host allows and hard d
     }
     assert.equal(calls, 0)
 })
+
+test("unexpected failures identify their stage without exposing exception contents", async () => {
+    const { reviewer, diagnostics } = setup(async () => { throw Object.assign(new Error("SECRET_RESPONSE"), { code: "ECONNRESET", status: 502 }) })
+    const event = permission()
+    await reviewer.evaluate(event)
+    assert.equal(event.effect, "ask")
+    assert.deepEqual(diagnostics.lastReview?.failureDetails, { stage: "reviewer", name: "Error", code: "ECONNRESET", status: 502 })
+    assert.ok(!JSON.stringify(diagnostics.lastReview).includes("SECRET_RESPONSE"))
+})

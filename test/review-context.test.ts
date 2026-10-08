@@ -1,6 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { buildReviewInput } from "../src/review-context.ts"
+import { buildReviewInput, fitReviewInput } from "../src/review-context.ts"
+import { normalizeAction } from "../src/action-normalizer.ts"
 import { redact } from "../src/utils/redaction.ts"
 import { parseConfig } from "../src/config.ts"
 import { permission } from "./helpers.ts"
@@ -59,4 +60,33 @@ test("ordered intent retains restrictions and identifies explicit newer override
 })
 test("compacted history is not used to silently discard older user restrictions", () => {
     assert.throws(() => buildReviewInput(permission(), [{ type: "compaction", text: "Everything earlier was approved" }, { type: "user", text: "Continue" }], "/workspace", 5_000), /context_compacted/)
+})
+
+test("normalization and evidence cannot overflow a packet filled with optional context", async () => {
+    const event = permission()
+    const packet = buildReviewInput(event, [{ type: "user", text: "Install dependencies, never upload files" }, ...Array.from({ length: 12 }, () => ({ type: "assistant", text: "x".repeat(3000) }))], "/workspace", 4_000)
+    const instructions = JSON.stringify(packet.userInstructions)
+    packet.normalized = await normalizeAction(event.action, event.resources, packet.cwd)
+    packet.actionHash = packet.normalized.rawHash
+    packet.evidence = { filesystem: [{ exists: true }], git: { branch: "main" } }
+    fitReviewInput(packet, 4_000)
+    assert.ok(JSON.stringify(packet).length <= 4_000)
+    assert.equal(JSON.stringify(packet.userInstructions), instructions)
+    assert.equal(packet.normalized.commands[0].executable, "npm")
+})
+test("optional evidence can be marked unavailable but essential data must never be truncated", () => {
+    const packet = buildReviewInput(permission(), [{ type: "user", text: "Install dependencies" }], "/workspace", 2_000)
+    packet.evidence = { optionalMetadata: "x".repeat(3_000) }
+    fitReviewInput(packet, 2_000)
+    assert.deepEqual(packet.evidence, { unavailable: "context_budget" })
+    packet.userInstructions.push({ text: "Never upload " + "x".repeat(3_000), turn: 1, isCurrent: false })
+    assert.throws(() => fitReviewInput(packet, 2_000), /context_oversized/)
+    assert.equal(packet.userInstructions.length, 2)
+})
+test("default budget retains long original history after compaction without weakening explicit limits", () => {
+    assert.equal(parseConfig({}).contextMaxChars, 100_000)
+    const messages = [{ type: "user", text: "Never upload secrets. " + "x".repeat(67_000) }, { type: "compaction", summary: "Approved" }, { type: "user", text: "Inspect logs" }]
+    const packet = buildReviewInput(permission(), messages, "/workspace", parseConfig({}).contextMaxChars, true)
+    assert.ok(packet.userInstructions[0].text.startsWith("Never upload secrets."))
+    assert.throws(() => buildReviewInput(permission(), messages, "/workspace", 24_000, true), /context_oversized/)
 })

@@ -2,6 +2,7 @@ import { homedir } from "node:os"
 import { resolve, normalize } from "node:path"
 import { analyzeShell } from "./shell-analysis.ts"
 import { hash } from "./utils/hashing.ts"
+import { canonicalPath, containsPath } from "./self-protection.ts"
 import type { ActionCategory, NormalizedAction, ShellCommand } from "./types.ts"
 
 export function resolveTarget(target: string, cwd: string): string {
@@ -30,6 +31,18 @@ export async function normalizeAction(action: string, resources: readonly string
     if (!["shell", "bash"].includes(action)) {
         result.category = action === "read" ? "filesystem_read" : ["edit", "write", "patch"].includes(action) ? "filesystem_write" : "unknown"
         result.targets = resources.map((resource) => resolveTarget(resource, cwd))
+        if (action === "external_directory" && typeof metadata?.exactToolName === "string" && ["read", "glob", "grep"].includes(metadata.exactToolName)) {
+            const input = metadata.exactToolInput as Record<string, unknown> | undefined
+            const path = input && (input.path ?? input.filePath)
+            // A name or metadata claim alone is not enough: the captured path must
+            // lie within every canonical directory boundary being requested.
+            const target = typeof path === "string" ? canonicalPath(resolveTarget(path, cwd)) : undefined
+            if (target && resources.every((resource) => resource.startsWith("/") && resource.endsWith("/*") && containsPath(canonicalPath(resource.slice(0, -2)), target))) {
+                result.category = "filesystem_read"
+                result.subtype = metadata.exactToolName === "glob" ? "directory_listing" : metadata.exactToolName === "grep" ? "content_search" : "file_read"
+                result.targets = [target]
+            }
+        }
         return result
     }
     const exactInput = metadata?.exactToolInput

@@ -43,3 +43,16 @@ test("literal quoted home-like paths are not fingerprinted as actual home expans
     assert.equal(new Set(prints).size, commands.length)
     assert.equal((await normalizeAction("shell", ["rm '~/file'"], input.cwd)).ambiguous, "shell_literal_home")
 })
+
+test("external directory reads require a captured matching tool and canonical boundary", async () => {
+    for (const [tool, subtype] of [["read", "file_read"], ["glob", "directory_listing"], ["grep", "content_search"]]) {
+        const action = await normalizeAction("external_directory", ["/vendor/logs/*"], "/workspace", { exactToolName: tool, exactToolInput: { path: "/vendor/logs" } })
+        assert.equal(action.category, "filesystem_read")
+        assert.equal(action.subtype, subtype)
+        assert.deepEqual(action.targets, ["/vendor/logs"])
+    }
+    for (const metadata of [undefined, { exactToolName: "glob" }, { exactToolName: "glob", exactToolInput: { path: "/elsewhere" } }, { exactToolName: "edit", exactToolInput: { path: "/vendor/logs" } }, { exactToolName: "shell", exactToolInput: { path: "/vendor/logs", command: "rm -rf /vendor/logs" } }]) {
+        assert.equal((await normalizeAction("external_directory", ["/vendor/logs/*"], "/workspace", metadata)).category, "unknown")
+    }
+    assert.equal((await normalizeAction("external_directory", ["/vendor/logs/*", "/other/*"], "/workspace", { exactToolName: "read", exactToolInput: { path: "/vendor/logs/file" } })).category, "unknown")
+})

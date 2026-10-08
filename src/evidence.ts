@@ -1,16 +1,28 @@
 import { lstat } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import type { Config } from "./config.ts"
 import { canonicalPath, containsPath } from "./self-protection.ts"
 import { safeRenderRationale } from "./utils/safe-render.ts"
 import type { ReviewInput } from "./types.ts"
+import { ReviewError } from "./review-error.ts"
 
 const exec = promisify(execFile)
 export async function enrichEvidence(input: ReviewInput, config: Config["evidence"], signal: AbortSignal): Promise<Record<string, unknown>> {
+    try { return await gatherEvidence(input, config, signal) } catch (error) {
+        signal.throwIfAborted()
+        const value = error as NodeJS.ErrnoException
+        const unavailable = value.name === "TimeoutError" ? "timeout" : ["EPERM", "EACCES"].includes(value.code ?? "") ? "access_denied" : value.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || (error instanceof ReviewError && error.code === "evidence_oversized") ? "output_limit" : undefined
+        if (!unavailable) throw error
+        // Evidence is advisory; explicit absence must not become authorization.
+        return { unavailable }
+    }
+}
+
+async function gatherEvidence(input: ReviewInput, config: Config["evidence"], signal: AbortSignal): Promise<Record<string, unknown>> {
     if (!config.enabled) return {}
     const result: Record<string, unknown> = {}
     const timeout = AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)])
@@ -28,6 +40,7 @@ export async function enrichEvidence(input: ReviewInput, config: Config["evidenc
         const files: Record<string, unknown>[] = []
         for (const path of paths) {
             timeout.throwIfAborted()
+            if (!containsPath(resolve(input.cwd), resolve(path)) && !containsPath(root, resolve(path))) { files.push({ withinWorkspace: false, inspected: false }); continue }
             const withinWorkspace = containsPath(root, canonicalPath(path))
             if (!withinWorkspace || /[\*?\[]/.test(path)) { files.push({ withinWorkspace, inspected: false }); continue }
             try { const info = await bounded(lstat(path)); timeout.throwIfAborted(); files.push({ path: safeRenderRationale(path, 256), withinWorkspace, exists: true, isDirectory: info.isDirectory(), isSymbolicLink: info.isSymbolicLink() }) } catch (error) {
@@ -63,6 +76,6 @@ export async function enrichEvidence(input: ReviewInput, config: Config["evidenc
         }
     }
     timeout.throwIfAborted()
-    if (Buffer.byteLength(JSON.stringify(result)) > config.maxBytes) throw new Error("evidence_oversized")
+    if (Buffer.byteLength(JSON.stringify(result)) > config.maxBytes) throw new ReviewError("evidence_oversized")
     return result
 }

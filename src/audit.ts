@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import type { Config } from "./config.ts"
 import type { EffectiveDecision, GuardianAssessment } from "./types.ts"
+import type { FailureDetails } from "./review-error.ts"
 
 export interface ReviewAuditRecord {
     timestamp: string
@@ -23,6 +24,7 @@ export interface ReviewAuditRecord {
     protocol?: "sse" | "websocket"
     preflight?: string
     failure?: string
+    failureDetails?: FailureDetails
     cached?: boolean
 }
 

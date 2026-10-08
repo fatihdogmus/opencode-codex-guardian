@@ -78,7 +78,7 @@ export function parseConfig(value: Record<string, unknown>): Config {
         nativeFreeOnly: boolean(input.nativeFreeOnly, true),
         failureMode: choice(input.failureMode, ["ask", "deny"], "ask"),
         timeoutMs: integer(reviewer.timeoutMs ?? input.timeoutMs, 15_000, 10, 120_000),
-        contextMaxChars: integer(input.contextMaxChars, 24_000, 2_000, 100_000),
+        contextMaxChars: integer(input.contextMaxChars, 100_000, 2_000, 100_000),
         logging: { enabled: boolean(logging.enabled, true) },
         circuitBreaker: {
             enabled: boolean(breaker.enabled, true),

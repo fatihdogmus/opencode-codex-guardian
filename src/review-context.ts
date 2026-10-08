@@ -2,11 +2,11 @@ import { redact, redactValue } from "./utils/redaction.ts"
 import { ReviewError } from "./review-error.ts"
 import type { PermissionEvent, ReviewInput, ReviewMessage } from "./types.ts"
 
-export function buildReviewInput(event: PermissionEvent, messages: readonly unknown[], cwd: string, maxChars: number): ReviewInput {
+export function buildReviewInput(event: PermissionEvent, messages: readonly unknown[], cwd: string, maxChars: number, completeHistory = false): ReviewInput {
     const entries = messages.filter((message): message is Record<string, unknown> => !!message && typeof message === "object")
     const users = entries.filter((message) => message.type === "user" && typeof message.text === "string")
     const latest = users.at(-1)
-    if (entries.some((message) => message.type === "compaction")) throw new ReviewError("context_compacted")
+    if (!completeHistory && entries.some((message) => message.type === "compaction")) throw new ReviewError("context_compacted")
     if (!latest || !String(latest.text).trim()) throw new ReviewError("context_missing_user_intent")
     const input: ReviewInput = {
         sessionID: event.sessionID,
@@ -39,4 +39,13 @@ export function buildReviewInput(event: PermissionEvent, messages: readonly unkn
         }
     }
     return input
+}
+
+// Run after normalization, host evidence and local metadata have been added.
+// Only optional, untrusted context/evidence may be removed; intent, restrictions,
+// exact action, source binding and normalized side effects must remain intact.
+export function fitReviewInput(input: ReviewInput, maxChars: number): void {
+    while (JSON.stringify(input).length > maxChars && input.recentContext.length) input.recentContext.shift()
+    if (JSON.stringify(input).length > maxChars && input.evidence) input.evidence = { unavailable: "context_budget" }
+    if (JSON.stringify(input).length > maxChars) throw new ReviewError("context_oversized")
 }
