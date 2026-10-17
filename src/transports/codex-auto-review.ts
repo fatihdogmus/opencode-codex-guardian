@@ -6,6 +6,7 @@ import { guardianBody, isCodexURL, primaryBody, ParentResponses, SSEObserver } f
 import { Diagnostics } from "../diagnostics.ts"
 import { ReviewError } from "../review-error.ts"
 import type { GuardianAssessment, ReviewerTransport, ReviewInput } from "../types.ts"
+import { readRequestJSON, withRequestJSON } from "../utils/request-json.ts"
 
 interface ReviewSession {
     sessionID: string
@@ -62,20 +63,20 @@ export class CodexAutoReviewTransport implements ReviewerTransport {
             if (this.isInternal(event.sessionID) && (this.closed || !entry)) throw new ReviewError("native_session_inactive")
             if (entry) {
                 if (event.kind !== "generate" || !isCodexURL(event.request.url) || !await this.oauthAvailable()) throw new ReviewError("native_route_unavailable")
-                const body = guardianBody(await event.request.clone().json(), entry.parentID, entry.sessionID)
+                const body = guardianBody(await readRequestJSON(event.request), entry.parentID, entry.sessionID)
                 requireActive(entry)
                 const headers = new Headers(event.request.headers)
                 headers.set("x-codex-guardian", "reviewer")
                 headers.set("x-openai-subagent", "guardian")
                 headers.delete("x-codex-routing-hint")
-                event.request = new Request(event.request, { headers, body: JSON.stringify(body) })
+                event.request = withRequestJSON(event.request, body, headers)
                 entry.sent = true
                 entry.protocol = "sse"
                 this.recordProtocol()
                 return
             }
             if (event.kind !== "primary" || !isCodexURL(event.request.url) || !await this.oauthAvailable()) return
-            event.request = new Request(event.request, { body: JSON.stringify(primaryBody(await event.request.clone().json())) })
+            event.request = withRequestJSON(event.request, primaryBody(await readRequestJSON(event.request)))
             this.diagnostics.primaryMetadata = true
         }, { providerID: "openai" })
         await this.ctx.session.hook("http.response", (event) => {

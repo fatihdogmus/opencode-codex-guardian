@@ -5,8 +5,11 @@ import { CodexAutoReviewTransport } from "../../src/transports/codex-auto-review
 import { Diagnostics } from "../../src/diagnostics.ts"
 import { input, allow } from "../helpers.ts"
 import { AUTHORIZATION_GUIDANCE } from "../../src/review-policy.ts"
+import { zstdCompressSync, gzipSync, deflateSync, brotliCompressSync } from "node:zlib"
 
-async function fixture(oauth = true, websocket = false, messages: unknown[] = []) {
+const encodings = { zstd: zstdCompressSync, gzip: gzipSync, deflate: deflateSync, br: brotliCompressSync }
+
+async function fixture(oauth = true, websocket = false, messages: unknown[] = [], encoding?: keyof typeof encodings) {
     const hooks = new Map<string, (event: any) => Promise<void>>()
     const created: any[] = []
     const removed: string[] = []
@@ -35,9 +38,14 @@ async function fixture(oauth = true, websocket = false, messages: unknown[] = []
                     await hooks.get("experimental.ws.send")!(send)
                     requests.push(JSON.parse(send.frame))
                 } else {
-                    const request = { ...event, request: new Request("https://chatgpt.com/backend-api/codex/responses", { method: "POST", body: JSON.stringify({ model: "gpt-6-luna" }) }) }
+                    const json = JSON.stringify({ model: "gpt-6-luna" })
+                    const body = encoding ? encodings[encoding](Buffer.from(json)) : json
+                    const headers = encoding ? { "content-type": "application/json", "content-encoding": encoding, "content-length": String(Buffer.byteLength(body)) } : undefined
+                    const request = { ...event, request: new Request("https://chatgpt.com/backend-api/codex/responses", { method: "POST", body, headers }) }
                     await hooks.get("http.request")!(request)
                     assert.equal(request.request.headers.get("x-codex-guardian"), "reviewer")
+                    assert.equal(request.request.headers.get("content-encoding"), null)
+                    assert.equal(request.request.headers.get("content-length"), null)
                     requests.push(await request.request.json())
                 }
                 return { text: JSON.stringify(allow) }
@@ -69,6 +77,34 @@ for (const websocket of [false, true]) {
         assert.deepEqual(retry.decision, { retry: false })
         await f.transport.close()
         assert.deepEqual(f.removed, ["ses_reviewer1", "ses_reviewer2"])
+    })
+}
+
+for (const encoding of Object.keys(encodings) as (keyof typeof encodings)[]) {
+    test(`native HTTP decodes ${encoding} requests before Guardian rewriting`, async () => {
+        const f = await fixture(true, false, [], encoding)
+        assert.deepEqual(await f.transport.review({ ...input }, new AbortController().signal), allow)
+        assert.equal(f.requests[0].model, "codex-auto-review")
+        assert.equal(f.requests[0].client_metadata.parent_response_id, "resp_parent")
+        assert.deepEqual(f.requests[0].tools, [])
+        assert.deepEqual(f.removed, ["ses_reviewer1"])
+        await f.transport.close()
+    })
+
+    test(`primary HTTP credit metadata preserves ${encoding} request content and auth`, async () => {
+        const f = await fixture()
+        const original = { model: "gpt-6-luna", input: [{ role: "user", content: "Hello" }], tools: [{ name: "shell" }] }
+        const body = encodings[encoding](Buffer.from(JSON.stringify(original)))
+        const event = { sessionID: "ses_main", kind: "primary", request: new Request("https://chatgpt.com/backend-api/codex/responses", {
+            method: "POST", body, headers: { "content-type": "application/json", "content-encoding": encoding, "content-length": String(body.length), authorization: "Bearer test-token" },
+        }) }
+        await f.hooks.get("http.request")!(event)
+        assert.deepEqual(await event.request.json(), { ...original, client_metadata: { guardian_credits_requested: "true" } })
+        assert.equal(event.request.headers.get("content-encoding"), null)
+        assert.equal(event.request.headers.get("content-length"), null)
+        assert.equal(event.request.headers.get("authorization"), "Bearer test-token")
+        assert.equal(event.request.headers.get("content-type"), "application/json")
+        await f.transport.close()
     })
 }
 

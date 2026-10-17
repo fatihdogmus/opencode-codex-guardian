@@ -17,7 +17,7 @@ This includes out-of-project `external_directory` requests. Approval is scoped t
 ## Requirements
 
 - Node.js 26 or newer.
-- OpenCode V2; tested with `2.0.24`, matching the pinned plugin dependency.
+- OpenCode V2; tested with `2.0.24` and `2.0.32`. Plugin API dependency pinned to `2.0.24`.
 - For native reviews: the built-in `openai` provider connected through ChatGPT OAuth, with the main session using its Codex endpoint.
 
 OpenAI API-key connections and custom provider aliases are not supported by the native transport. Backend availability of `codex-auto-review` is not guaranteed.
@@ -91,6 +91,8 @@ After changing plugin source, run `npm run build` again. Configuration changes n
 3. Review the action through `codex-auto-review` in a **fresh, tool-free child session**, using OpenCode's ChatGPT OAuth connection and parent-response linkage.
 4. Validate the assessment, delete the child session, and apply local risk rules. Failures never silently approve an action.
 5. Write hashed decision metadata to the audit log. Successful approvals are silent; deny/ask explanations are sanitized.
+
+Native HTTP hooks accept plain JSON and `zstd`, `gzip`, `deflate`, or Brotli-compressed requests. The plugin decodes the body before editing Guardian metadata and removes stale encoding/length headers from the rewritten JSON. Unsupported or malformed bodies fail closed; they never bypass approval.
 
 The reviewer reuses OpenCode's active ChatGPT OAuth connection. It does not require a separate API key and does not use your selected chat model for the review itself. Your selected model continues doing the coding.
 
